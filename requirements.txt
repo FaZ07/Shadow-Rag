@@ -1,0 +1,17 @@
+# Core RAG
+faiss-cpu>=1.7.4
+sentence-transformers>=2.7.0
+pdfplumber>=0.11.0
+nltk>=3.8.1
+
+# LLM backends (choose one or both)
+google-generativeai>=0.7.0       # Gemini (free tier) — default backend
+transformers>=4.40.0             # HuggingFace local model (optional)
+accelerate>=0.30.0               # Required for some HF models
+
+# UI
+streamlit>=1.35.0
+
+# Utilities
+numpy>=1.24.0
+python-dotenv>=1.0.0
