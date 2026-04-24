@@ -1,14 +1,14 @@
 """
 LLM abstraction and answer generation.
-Supports: Gemini (default, free tier) | HuggingFace local model.
-Set LLM_BACKEND env var to 'gemini' or 'huggingface'.
+Supports: groq (default, free) | gemini | huggingface
+Set LLM_BACKEND env var to select backend.
 """
 import json
 import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Union
+from typing import Dict, List, Union
 
 logger = logging.getLogger(__name__)
 
@@ -89,14 +89,12 @@ Return ONLY valid JSON — no markdown:
 def parse_json_response(text: str) -> Union[Dict, List]:
     """Extract JSON from LLM response, stripping markdown code fences."""
     text = text.strip()
-    # Strip ```json ... ``` or ``` ... ```
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
     text = text.strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Fallback: find first JSON object or array in the text
         match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
         if match:
             return json.loads(match.group(1))
@@ -108,22 +106,41 @@ def parse_json_response(text: str) -> Union[Dict, List]:
 class LLMClient:
     """
     Thin wrapper around supported LLM backends.
-    Backend is selected by LLM_BACKEND env var (default: 'gemini').
+    Backend selected by LLM_BACKEND env var (default: 'groq').
     """
 
     def __init__(self):
-        self.backend = os.getenv("LLM_BACKEND", "gemini").lower()
+        self.backend = os.getenv("LLM_BACKEND", "groq").lower()
+        self._groq_client = None
         self._gemini_model = None
         self._hf_pipeline = None
         self._init()
 
     def _init(self):
-        if self.backend == "gemini":
+        if self.backend == "groq":
+            self._init_groq()
+        elif self.backend == "gemini":
             self._init_gemini()
         elif self.backend == "huggingface":
             self._init_huggingface()
         else:
-            raise ValueError(f"Unknown LLM_BACKEND='{self.backend}'. Use 'gemini' or 'huggingface'.")
+            raise ValueError(f"Unknown LLM_BACKEND='{self.backend}'. Use 'groq', 'gemini', or 'huggingface'.")
+
+    def _init_groq(self):
+        try:
+            from groq import Groq
+        except ImportError:
+            raise ImportError("Run: pip install groq")
+
+        api_key = os.getenv("GROQ_API_KEY", "")
+        if not api_key:
+            raise EnvironmentError(
+                "GROQ_API_KEY is not set.\n"
+                "Get a free key at https://console.groq.com"
+            )
+        self._groq_client = Groq(api_key=api_key)
+        self._groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        logger.info("LLM backend: Groq (%s)", self._groq_model)
 
     def _init_gemini(self):
         try:
@@ -133,20 +150,14 @@ class LLMClient:
 
         api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key:
-            raise EnvironmentError(
-                "GEMINI_API_KEY is not set.\n"
-                "Get a free key at https://aistudio.google.com/apikey\n"
-                "Or switch to: LLM_BACKEND=huggingface"
-            )
+            raise EnvironmentError("GEMINI_API_KEY is not set.")
         genai.configure(api_key=api_key)
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-04-17")
         self._gemini_model = genai.GenerativeModel(
-            model_name=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-04-17"),
-            generation_config={
-                "temperature": 0.1,
-                "max_output_tokens": 2048,
-            },
+            model_name=model_name,
+            generation_config={"temperature": 0.1, "max_output_tokens": 2048},
         )
-        logger.info("LLM backend: Gemini (%s)", os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-04-17"))
+        logger.info("LLM backend: Gemini (%s)", model_name)
 
     def _init_huggingface(self):
         try:
@@ -155,23 +166,19 @@ class LLMClient:
             raise ImportError("Run: pip install transformers accelerate")
 
         model_id = os.getenv("HF_MODEL", "google/flan-t5-large")
-        self._hf_pipeline = hf_pipeline(
-            "text2text-generation",
-            model=model_id,
-            max_new_tokens=512,
-        )
+        self._hf_pipeline = hf_pipeline("text2text-generation", model=model_id, max_new_tokens=512)
         logger.info("LLM backend: HuggingFace (%s)", model_id)
 
     def generate(self, prompt: str, retries: int = 2) -> str:
-        """Generate text; retries once on transient failures."""
+        """Generate text with automatic retry on transient failures."""
         for attempt in range(retries + 1):
             try:
-                if self.backend == "gemini":
-                    response = self._gemini_model.generate_content(prompt)
-                    return response.text.strip()
+                if self.backend == "groq":
+                    return self._groq_generate(prompt)
+                elif self.backend == "gemini":
+                    return self._gemini_model.generate_content(prompt).text.strip()
                 else:
-                    result = self._hf_pipeline(prompt)
-                    return result[0]["generated_text"].strip()
+                    return self._hf_pipeline(prompt)[0]["generated_text"].strip()
             except Exception as exc:
                 if attempt < retries:
                     wait = 2 ** attempt
@@ -180,6 +187,15 @@ class LLMClient:
                     time.sleep(wait)
                 else:
                     raise
+
+    def _groq_generate(self, prompt: str) -> str:
+        response = self._groq_client.chat.completions.create(
+            model=self._groq_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=2048,
+        )
+        return response.choices[0].message.content.strip()
 
 
 # ── High-level generation functions ──────────────────────────────────────────
