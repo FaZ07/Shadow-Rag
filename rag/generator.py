@@ -140,13 +140,13 @@ class LLMClient:
             )
         genai.configure(api_key=api_key)
         self._gemini_model = genai.GenerativeModel(
-            model_name=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+            model_name=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
             generation_config={
                 "temperature": 0.1,
                 "max_output_tokens": 2048,
             },
         )
-        logger.info("LLM backend: Gemini (%s)", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+        logger.info("LLM backend: Gemini (%s)", os.getenv("GEMINI_MODEL", "gemini-2.0-flash"))
 
     def _init_huggingface(self):
         try:
